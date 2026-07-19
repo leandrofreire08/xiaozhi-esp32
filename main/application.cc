@@ -58,6 +58,38 @@ bool Application::SetDeviceState(DeviceState state) {
     return state_machine_.TransitionTo(state);
 }
 
+#if CONFIG_XIAOZHI_DEBUG_TEXT_CONSOLE
+#include <esp_console.h>
+// Fork (if-my-hermes-speak): a `say <text>` REPL command over USB-Serial-JTAG that
+// injects text as a voice turn (bypasses mic/STT). Debug builds only.
+static void StartDebugTextConsole() {
+    esp_console_repl_t* repl = nullptr;
+    esp_console_repl_config_t cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+    cfg.prompt = "xz>";
+    cfg.max_cmdline_length = 512;
+    const esp_console_cmd_t say = {
+        .command = "say",
+        .help = "Inject text as a voice turn (bypasses STT)",
+        .hint = "<text>",
+        .func = [](int argc, char** argv) -> int {
+            std::string t;
+            for (int i = 1; i < argc; ++i) { if (i > 1) t += ' '; t += argv[i]; }
+            if (t.empty()) { printf("usage: say <text>\n"); return 1; }
+            Application::GetInstance().InjectDebugText(t);
+            return 0;
+        },
+        .argtable = nullptr,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&say));
+    // Board sets no CONFIG_ESP_CONSOLE_* → IDF-6 esp32s3 default is USB-Serial-JTAG,
+    // matching the /dev/cu.usbmodem port. If menuconfig resolved to UART/native-CDC,
+    // swap this one factory call.
+    esp_console_dev_usb_serial_jtag_config_t hw = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw, &cfg, &repl));
+    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+}
+#endif
+
 void Application::Initialize() {
     auto& board = Board::GetInstance();
     SetDeviceState(kDeviceStateStarting);
@@ -163,6 +195,10 @@ void Application::Initialize() {
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
+
+#if CONFIG_XIAOZHI_DEBUG_TEXT_CONSOLE
+    StartDebugTextConsole();  // Fork: `say <text>` serial injection console
+#endif
 }
 
 void Application::Run() {
@@ -216,6 +252,16 @@ void Application::Run() {
                 audio_service_.IsPlaybackIdle()) {
                 pending_listening_start_ = false;
                 StartListeningAudio();
+            }
+            // Fork: deferred one-shot sleep — the reply finished playing, so it
+            // is now safe to end the conversation without cutting the last
+            // sentence.
+            if (pending_sleep_ && audio_service_.IsPlaybackIdle()) {
+                pending_sleep_ = false;
+                auto st = GetDeviceState();
+                if (st == kDeviceStateListening || st == kDeviceStateSpeaking) {
+                    EndConversation();
+                }
             }
         }
 
@@ -412,6 +458,10 @@ void Application::CheckAssetsVersion() {
 
     // Apply assets
     assets.Apply();
+    // Fork (if-my-hermes-speak): assets.Apply() rebuilds the emoji collection from the
+    // assets partition (which lacks our animated speaking/blink). Let the board install
+    // its own collection last.
+    Board::GetInstance().OnThemeAssetsApplied();
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
 }
@@ -498,14 +548,10 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    if (ota_->HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota_->HasWebsocketConfig()) {
-        protocol_ = std::make_unique<WebsocketProtocol>();
-    } else {
-        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
-        protocol_ = std::make_unique<MqttProtocol>();
-    }
+    // Fork (if-my-hermes-speak): always talk to our adapter over WebSocket. The cloud
+    // CheckVersion is disabled (ota.cc), so HasMqtt/WebsocketConfig() are both false and
+    // stock would fall back to MQTT — force WebSocket. Endpoint/token from NVS websocket/*.
+    protocol_ = std::make_unique<WebsocketProtocol>();
 
     protocol_->OnConnected([this]() {
         DismissAlert();
@@ -596,6 +642,22 @@ void Application::InitializeProtocol() {
                     // Do a reboot if user requests a OTA update
                     Schedule([this]() {
                         Reboot();
+                    });
+                } else if (strcmp(command->valuestring, "sleep") == 0) {
+                    // Fork: one-shot end-of-turn. The server sends this after the
+                    // reply's TTS so the device ends the conversation (closes the
+                    // audio channel + goes idle) instead of staying in auto-mode
+                    // `listening`. Defer until playback drains so the last
+                    // sentence isn't cut.
+                    Schedule([this]() {
+                        if (GetDeviceState() == kDeviceStateListening ||
+                            GetDeviceState() == kDeviceStateSpeaking) {
+                            if (audio_service_.IsPlaybackIdle()) {
+                                EndConversation();
+                            } else {
+                                pending_sleep_ = true;
+                            }
+                        }
                     });
                 } else {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
@@ -811,17 +873,17 @@ void Application::HandleWakeWordDetectedEvent() {
         audio_service_.EncodeWakeWord();
         auto wake_word = audio_service_.GetLastWakeWord();
 
-        if (!protocol_->IsAudioChannelOpened()) {
-            SetDeviceState(kDeviceStateConnecting);
-            // Schedule to let the state change be processed first (UI update),
-            // then continue with OpenAudioChannel which may block for ~1 second
-            Schedule([this, wake_word]() {
-                ContinueWakeWordInvoke(wake_word);
-            });
-            return;
-        }
-        // Channel already opened, continue directly
-        ContinueWakeWordInvoke(wake_word);
+        // Always route through `connecting` so the scheduled ContinueWakeWordInvoke
+        // (which requires that state) proceeds. It opens the audio channel only if
+        // it isn't already open, so this works whether a prior conversation left
+        // the channel up (fork one-shot idle keeps it open for context) or not.
+        // Directly calling ContinueWakeWordInvoke here while still `idle` would
+        // hit its `state != connecting` guard and silently do nothing.
+        SetDeviceState(kDeviceStateConnecting);
+        Schedule([this, wake_word]() {
+            ContinueWakeWordInvoke(wake_word);
+        });
+        return;
     } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
         // Clear send queue to avoid sending residues to server
@@ -900,6 +962,9 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableWakeWordDetection(true);
             break;
         case kDeviceStateConnecting:
+            // New turn/wake cancels a stale one-shot sleep from a prior turn
+            // (the sleep command re-sets it after this turn's reply).
+            pending_sleep_ = false;
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
@@ -992,6 +1057,17 @@ void Application::AbortSpeaking(AbortReason reason) {
 void Application::SetListeningMode(ListeningMode mode) {
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
+}
+
+void Application::EndConversation() {
+    // Fork one-shot: return to idle after the reply (mic + LED off). The audio
+    // channel is left OPEN on purpose so the gateway session — and its
+    // conversation history — persists across wakes; the next "Alexa" reuses it,
+    // giving spoken follow-ups ("...and in Tokyo?") their context. The wake path
+    // (HandleWakeWordDetectedEvent) routes through `connecting`, so a wake with
+    // the channel already open works. The channel's own inactivity timeout will
+    // eventually close it if the user walks away.
+    SetDeviceState(kDeviceStateIdle);
 }
 
 ListeningMode Application::GetDefaultListeningMode() const {
@@ -1127,6 +1203,35 @@ void Application::SendMcpMessage(const std::string& payload) {
             mcp_broadcast_callback_(payload);
         }
     });
+}
+
+// Fork (if-my-hermes-speak): inject a typed line as a user turn (serial test hook).
+// Opens the audio channel (fires the hello handshake) if needed, then sends a
+// {"type":"debug_text"} frame. Playback needs no mic: the adapter's tts:start drives
+// kDeviceStateSpeaking and Opus decodes while speaking.
+void Application::InjectDebugText(const std::string& text) {
+    if (!protocol_) {
+        ESP_LOGW(TAG, "InjectDebugText: protocol not ready");
+        return;
+    }
+    if (GetDeviceState() == kDeviceStateSpeaking) {
+        Schedule([this]() { AbortSpeaking(kAbortReasonNone); });
+    }
+    if (!protocol_->IsAudioChannelOpened()) {
+        SetDeviceState(kDeviceStateConnecting);
+        Schedule([this, text]() {
+            if (GetDeviceState() != kDeviceStateConnecting) return;
+            Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+            if (!protocol_->OpenAudioChannel()) return;  // fires hello handshake
+            // connecting -> idle so the adapter's tts:start (idle -> speaking) is a
+            // valid transition. device_state_machine.cc: speaking is reachable only
+            // from idle/listening, never from connecting.
+            SetDeviceState(kDeviceStateIdle);
+            protocol_->SendDebugText(text);
+        });
+        return;
+    }
+    Schedule([this, text]() { if (protocol_) protocol_->SendDebugText(text); });
 }
 
 void Application::SetAecMode(AecMode mode) {

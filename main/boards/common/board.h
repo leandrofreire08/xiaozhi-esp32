@@ -76,6 +76,10 @@ public:
     virtual NetworkInterface* GetNetwork() = 0;
     virtual void StartNetwork() = 0;
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) { (void)callback; }
+    // Fork (if-my-hermes-speak): called once after Assets::Apply() has (re)built the
+    // theme's emoji collection from the assets partition. A board may override this to
+    // install its own emoji collection last (assets.Apply would otherwise clobber it).
+    virtual void OnThemeAssetsApplied() {}
     virtual const char* GetNetworkStateIcon() = 0;
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging);
     virtual std::string GetSystemInfoJson();

@@ -1,0 +1,13 @@
+# Fork (if-my-hermes-speak) 16MB layout.
+# This fork points the device at a local Hermes adapter and DISABLES the cloud OTA
+# path (see ota.cc), so the upstream dual-OTA (2x 4MB) is dead weight. We use a single
+# 6MB app slot (room for ESP-SR MultiNet + the on-screen avatar), a 4MB assets SPIFFS,
+# and a 4MB "model" partition that ESP-SR needs to flash srmodels.bin (voice wake word).
+# Rollback is disabled (single slot) via CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n.
+# Name,   Type, SubType, Offset,   Size, Flags
+nvs,      data, nvs,     0x9000,   0x4000,
+otadata,  data, ota,     0xd000,   0x2000,
+phy_init, data, phy,     0xf000,   0x1000,
+ota_0,    app,  ota_0,   0x20000,  0x600000,
+assets,   data, spiffs,  0x620000, 0x400000,
+model,    data, spiffs,  0xa20000, 0x400000,

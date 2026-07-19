@@ -110,6 +110,7 @@ public:
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
+    void InjectDebugText(const std::string& text);  // Fork: serial text-injection test hook
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
@@ -146,6 +147,7 @@ private:
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
+    bool pending_sleep_ = false;  // Fork: end-of-turn `system:sleep` — go idle once playback drains (one-shot, no-AEC)
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
@@ -173,6 +175,7 @@ private:
     void InitializeProtocol();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+    void EndConversation();  // Fork one-shot: close channel + idle (see .cc)
     ListeningMode GetDefaultListeningMode() const;
     
     // State change handler called by state machine

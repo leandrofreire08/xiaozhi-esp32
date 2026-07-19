@@ -87,7 +87,13 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     commands_.clear();
 
     if (models_list == nullptr) {
+        // Fork (if-my-hermes-speak): use the English MultiNet when one is compiled
+        // (e.g. "Hey, Hermes"); fall back to Chinese for upstream default builds.
+#if defined(CONFIG_SR_MN_EN_MULTINET7_QUANT) || defined(CONFIG_SR_MN_EN_MULTINET6_QUANT) || defined(CONFIG_SR_MN_EN_MULTINET5_SINGLE_RECOGNITION_QUANT8)
+        language_ = "en";
+#else
         language_ = "cn";
+#endif
         models_ = esp_srmodel_init("model");
         owns_models_ = models_ != nullptr;
 #ifdef CONFIG_CUSTOM_WAKE_WORD
@@ -180,6 +186,16 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
     
     int chunksize = multinet_->get_samp_chunksize(multinet_model_data_);
     while (input_buffer_.size() >= chunksize) {
+        // Fork diagnostic: peak mic amplitude (confirms the mic is actually capturing).
+        // Speaking should push peak into the thousands; ~0 = no mic input reaching MultiNet.
+        {
+            static uint32_t dbg_ctr = 0;
+            int16_t peak = 0;
+            for (int i = 0; i < chunksize; i++) {
+                int16_t v = input_buffer_[i]; if (v < 0) v = -v; if (v > peak) peak = v;
+            }
+            if (++dbg_ctr % 30 == 0) ESP_LOGI(TAG, "mic peak=%d", peak);
+        }
 #if CONFIG_SEND_WAKE_WORD_DATA
         wake_word_audio_cache_.Store(input_buffer_.data(), chunksize);
 #endif
@@ -204,7 +220,15 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
             }
             multinet_->clean(multinet_model_data_);
         } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
-            ESP_LOGD(TAG, "Command word detection timeout, cleaning state");
+            // Fork: surface the best candidate + its score on a miss, so the wake
+            // threshold can be tuned from real speech instead of guesswork.
+            esp_mn_results_t *mn_result = multinet_->get_results(multinet_model_data_);
+            if (mn_result != nullptr && mn_result->num > 0) {
+                ESP_LOGW(TAG, "Wake miss (timeout): best cmd_id=%d prob=%f (threshold=%f)",
+                         mn_result->command_id[0], mn_result->prob[0], threshold_);
+            } else {
+                ESP_LOGW(TAG, "Wake miss (timeout): no candidate (threshold=%f)", threshold_);
+            }
             multinet_->clean(multinet_model_data_);
         }
         

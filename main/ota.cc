@@ -80,7 +80,11 @@ esp_err_t Ota::CheckVersion() {
 
     // Check if there is a new firmware version available
     current_version_ = app_desc->version;
-    ESP_LOGI(TAG, "Current version: %s", current_version_.c_str());
+    ESP_LOGI(TAG, "Current version: %s (cloud check disabled by fork)", current_version_.c_str());
+    // Fork (if-my-hermes-speak): never POST to CONFIG_OTA_URL. No cloud OTA, no
+    // activation HMAC. has_*_ flags stay false; protocol is forced to WebSocket in
+    // Application::InitializeProtocol(). WS endpoint/token come from NVS `websocket/*`.
+    return ESP_OK;
 
     std::string url = GetCheckVersionUrl();
     if (url.length() < 10) {

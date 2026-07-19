@@ -1,6 +1,8 @@
 #include "wifi_board.h"
 #include "codecs/es8311_audio_codec.h"
 #include "display/lcd_display.h"
+#include "lvgl_theme.h"                        // Fork: LvglTheme::set_emoji_collection
+#include "avatar/avatar_emoji_collection.h"    // Fork: generated custom avatar emojis
 #include "application.h"
 #include "button.h"
 #include "config.h"
@@ -127,6 +129,26 @@ public:
         // 由于屏幕是圆的，所以状态栏需要增加左右内边距
         lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES * 0.33, 0);
         lv_obj_set_style_pad_right(status_bar_, LV_HOR_RES * 0.33, 0);
+
+        // Fork (if-my-hermes-speak): the avatar art is 160px but the panel is 240px round.
+        // Let the emoji fill the circle: make its box full-screen (so the scaled image is
+        // not clipped to the content size) and upscale ~1.5x, centered. SetEmotion swaps
+        // only the image src (static + GIF frames share emoji_image_), so this scale sticks.
+        if (emoji_box_ != nullptr && emoji_image_ != nullptr) {
+            lv_obj_set_size(emoji_box_, LV_HOR_RES, LV_VER_RES);
+            lv_obj_align(emoji_box_, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_center(emoji_image_);
+            lv_image_set_pivot(emoji_image_, 80, 80);  // center of the 160px source
+            lv_image_set_scale(emoji_image_, 384);      // 256 = 100% -> 1.5x -> ~240px
+        }
+
+        // Fork (if-my-hermes-speak): clean face — hide the status icons/text (top) and
+        // keep the chat subtitle (bottom) hidden so the avatar owns the round screen.
+        // SetStatus only un-hides the status *label*, so hiding the parent bars sticks;
+        // SetHideSubtitle keeps bottom_bar_ hidden even when a reply sets chat text.
+        if (top_bar_ != nullptr) lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        if (status_bar_ != nullptr) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        SetHideSubtitle(true);
     }
 };
 
@@ -443,6 +465,18 @@ public:
 
     virtual Display* GetDisplay() override {
         return display_;
+    }
+
+    // Fork (if-my-hermes-speak): install the custom avatar emoji collection LAST, after
+    // Assets::Apply() rebuilt the theme collection from the assets partition (which has
+    // the 19 static emotions but not our animated speaking/blink). Called from
+    // Application::Initialize right after assets.Apply().
+    virtual void OnThemeAssetsApplied() override {
+        if (display_ == nullptr) return;
+        auto theme = static_cast<LvglTheme*>(display_->GetTheme());
+        if (theme != nullptr) {
+            theme->set_emoji_collection(std::make_shared<AvatarEmojiCollection>());
+        }
     }
 
     virtual Backlight* GetBacklight() override {

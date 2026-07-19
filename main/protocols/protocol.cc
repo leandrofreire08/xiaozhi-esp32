@@ -78,6 +78,21 @@ void Protocol::SendMcpMessage(const std::string& payload) {
     SendText(message);
 }
 
+// Fork (if-my-hermes-speak): inject a line of text as a user turn, standing in for
+// voice on the bench. The adapter routes {"type":"debug_text"} straight to the agent
+// (bypassing STT) when XIAOZHI_DEBUG_TEXT=1. cJSON is used so free text with quotes is
+// escaped correctly (unlike the raw concat above).
+void Protocol::SendDebugText(const std::string& text) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "debug_text");
+    cJSON_AddStringToObject(root, "text", text.c_str());
+    char* json = cJSON_PrintUnformatted(root);
+    SendText(json);
+    cJSON_free(json);
+    cJSON_Delete(root);
+}
+
 bool Protocol::IsTimeout() const {
     const int kTimeoutSeconds = 120;
     auto now = std::chrono::steady_clock::now();

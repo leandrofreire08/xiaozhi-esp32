@@ -880,6 +880,15 @@ else()
 endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
+# Fork (if-my-hermes-speak): compile the generated avatar emoji collection for boards
+# that ship one under <board>/avatar/ (see assets/avatar/build_assets.py). Empty glob
+# (no-op) for boards without it, so this stays board-agnostic.
+file(GLOB AVATAR_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/avatar/c/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_TYPE}/avatar/avatar_emoji_collection.cc
+)
+list(APPEND SOURCES ${AVATAR_SOURCES})
+
 # Select one audio engine for each chip family
 if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     list(APPEND SOURCES "audio/engines/afe_audio_engine.cc")
