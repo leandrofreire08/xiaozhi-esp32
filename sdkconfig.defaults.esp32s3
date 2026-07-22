@@ -30,3 +30,7 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1536
 
 # LVGL Graphics
 CONFIG_LV_USE_SNAPSHOT=y
+
+# Fork (dashboard+orb): radial gradient for the reactive orb + big clock font.
+CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS=y
+CONFIG_LV_FONT_MONTSERRAT_48=y

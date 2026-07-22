@@ -28,6 +28,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "power_manager.h"
+#include "device_state.h"
+#include "settings.h"
+#include <cJSON.h>
+#include <cmath>
+#include <string>
 
 #define TAG "Spotpear_ESP32_S3_1_28_BOX"
 
@@ -121,34 +126,262 @@ public:
         // to ensure lvgl objects are created before accessing them
     }
 
+    // Fork (if-my-hermes-speak): Dashboard + reactive orb. Supersedes the avatar
+    // *rendering* — 3 stacked bands on the round 240 panel: clock/date (top),
+    // orb pill (middle), temp·wifi·date (bottom). The orb encodes the turn state
+    // by base color + motion, tinted by emotion while responding.
+    // See .claude/plans/plan-request-linked-lobster.md.
+    enum OrbState { ORB_IDLE, ORB_LISTENING, ORB_PROCESSING, ORB_RESPONDING, ORB_ERROR };
+
     virtual void SetupUI() override {
-        // Call parent SetupUI() first to create all lvgl objects
+        // Parent builds all base objects (container_, emoji_box_, bars, chat).
         SpiLcdDisplay::SetupUI();
 
         DisplayLockGuard lock(this);
-        // 由于屏幕是圆的，所以状态栏需要增加左右内边距
-        lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES * 0.33, 0);
-        lv_obj_set_style_pad_right(status_bar_, LV_HOR_RES * 0.33, 0);
 
-        // Fork (if-my-hermes-speak): the avatar art is 160px but the panel is 240px round.
-        // Let the emoji fill the circle: make its box full-screen (so the scaled image is
-        // not clipped to the content size) and upscale ~1.5x, centered. SetEmotion swaps
-        // only the image src (static + GIF frames share emoji_image_), so this scale sticks.
-        if (emoji_box_ != nullptr && emoji_image_ != nullptr) {
-            lv_obj_set_size(emoji_box_, LV_HOR_RES, LV_VER_RES);
-            lv_obj_align(emoji_box_, LV_ALIGN_CENTER, 0, 0);
-            lv_obj_center(emoji_image_);
-            lv_image_set_pivot(emoji_image_, 80, 80);  // center of the 160px source
-            lv_image_set_scale(emoji_image_, 384);      // 256 = 100% -> 1.5x -> ~240px
-        }
-
-        // Fork (if-my-hermes-speak): clean face — hide the status icons/text (top) and
-        // keep the chat subtitle (bottom) hidden so the avatar owns the round screen.
-        // SetStatus only un-hides the status *label*, so hiding the parent bars sticks;
-        // SetHideSubtitle keeps bottom_bar_ hidden even when a reply sets chat text.
-        if (top_bar_ != nullptr) lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        // Retire the avatar + default bars — the dashboard owns the round screen.
+        if (emoji_box_ != nullptr)  lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        if (top_bar_ != nullptr)    lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
         if (status_bar_ != nullptr) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
-        SetHideSubtitle(true);
+        SetHideSubtitle(true);  // keep bottom_bar_ chat hidden
+
+        lv_obj_t* screen = lv_screen_active();
+        auto icon_font = static_cast<LvglTheme*>(current_theme_)->icon_font()->font();
+
+        // --- Middle band: the orb (radial-gradient pill) ---
+        orb_ = lv_obj_create(screen);
+        lv_obj_remove_style_all(orb_);
+        lv_obj_remove_flag(orb_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(orb_, kOrbW, kOrbH);
+        lv_obj_align(orb_, LV_ALIGN_CENTER, 0, kOrbY);
+        lv_obj_set_style_radius(orb_, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_transform_pivot_x(orb_, kOrbW / 2, 0);
+        lv_obj_set_style_transform_pivot_y(orb_, kOrbH / 2, 0);
+        // Radial gradient: bright core at center -> transparent at the right edge.
+        // The descriptor must outlive the call (style stores a pointer) -> member.
+        lv_grad_radial_init(&orb_grad_, kOrbW / 2, kOrbH / 2, kOrbW, kOrbH / 2,
+                            LV_GRAD_EXTEND_PAD);
+
+        // --- Top band: big clock + weekday ---
+        time_label_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(time_label_, &lv_font_montserrat_48, 0);
+        lv_obj_set_style_text_color(time_label_, lv_color_hex(0xFFFFFF), 0);
+        lv_label_set_text(time_label_, "--:--");
+        lv_obj_align(time_label_, LV_ALIGN_TOP_MID, 0, 26);
+
+        date_label_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(date_label_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(date_label_, lv_color_hex(0x8EA1B8), 0);
+        lv_label_set_text(date_label_, "");
+        lv_obj_align(date_label_, LV_ALIGN_TOP_MID, 0, 82);
+
+        // --- Bottom band: temp · wifi · short date ---
+        lv_obj_t* row = lv_obj_create(screen);
+        lv_obj_remove_style_all(row);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(row, LV_HOR_RES, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, 10, 0);
+        lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, -34);
+
+        temp_label_ = lv_label_create(row);
+        lv_obj_set_style_text_font(temp_label_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(temp_label_, lv_color_hex(0xC7D3E0), 0);
+        lv_label_set_text(temp_label_, "--\xC2\xB0");   // "--°" (UTF-8 degree)
+
+        wifi_label_ = lv_label_create(row);
+        lv_obj_set_style_text_font(wifi_label_, icon_font, 0);
+        lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0x8EA1B8), 0);
+        lv_label_set_text(wifi_label_, "");
+
+        botdate_label_ = lv_label_create(row);
+        lv_obj_set_style_text_font(botdate_label_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(botdate_label_, lv_color_hex(0x8EA1B8), 0);
+        lv_label_set_text(botdate_label_, "");
+
+        // Open-Meteo attribution (CC BY 4.0)
+        credit_label_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(credit_label_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(credit_label_, lv_color_hex(0x3A4656), 0);
+        lv_label_set_text(credit_label_, "Open-Meteo");
+        lv_obj_align(credit_label_, LV_ALIGN_BOTTOM_MID, 0, -12);
+
+        SetOrbState(ORB_IDLE);
+    }
+
+    // Orb reacts to emotion (`llm` message). While speaking -> tint the green;
+    // otherwise this is the "processing" cue (no native device state for it).
+    virtual void SetEmotion(const char* emotion) override {
+        DisplayLockGuard lock(this);
+        last_emotion_ = emotion ? emotion : "neutral";
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateSpeaking) {
+            ApplyResponseTint();
+        } else {
+            SetOrbState(ORB_PROCESSING);
+        }
+    }
+
+    // Per-second heartbeat (application.cc clock tick): refresh clock/date/wifi
+    // and re-sync the orb to the device state.
+    virtual void UpdateStatusBar(bool update_all = false) override {
+        SpiLcdDisplay::UpdateStatusBar(update_all);  // battery/mute (hidden) upkeep
+        DisplayLockGuard lock(this);
+
+        time_t now = time(NULL);
+        struct tm* tm = localtime(&now);
+        if (tm != nullptr && tm->tm_year >= 2025 - 1900 && time_label_ != nullptr) {
+            char buf[16];
+            strftime(buf, sizeof(buf), "%H:%M", tm);
+            lv_label_set_text(time_label_, buf);
+            char dbuf[24];
+            strftime(dbuf, sizeof(dbuf), "%a %d %b", tm);
+            lv_label_set_text(date_label_, dbuf);
+            char sbuf[12];
+            strftime(sbuf, sizeof(sbuf), "%d %b", tm);
+            lv_label_set_text(botdate_label_, sbuf);
+        }
+        // Mirror the base-computed wifi/network icon into the bottom row.
+        if (wifi_label_ != nullptr && network_label_ != nullptr) {
+            lv_label_set_text(wifi_label_, lv_label_get_text(network_label_));
+        }
+        SyncOrbToDeviceState();
+    }
+
+    // Weather task pushes the temperature here (thread-safe via lock).
+    void SetTemperature(float celsius, bool valid) {
+        DisplayLockGuard lock(this);
+        if (temp_label_ == nullptr || !valid) return;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d\xC2\xB0", (int)lroundf(celsius));
+        lv_label_set_text(temp_label_, buf);
+    }
+
+private:
+    static constexpr int kOrbW = 150;
+    static constexpr int kOrbH = 46;
+    static constexpr int kOrbY = 4;
+
+    lv_obj_t* orb_ = nullptr;
+    lv_obj_t* time_label_ = nullptr;
+    lv_obj_t* date_label_ = nullptr;
+    lv_obj_t* temp_label_ = nullptr;
+    lv_obj_t* wifi_label_ = nullptr;
+    lv_obj_t* botdate_label_ = nullptr;
+    lv_obj_t* credit_label_ = nullptr;
+    lv_grad_dsc_t orb_grad_{};
+    OrbState orb_state_ = ORB_IDLE;
+    std::string last_emotion_ = "neutral";
+
+    static uint32_t StateCore(OrbState s) {
+        switch (s) {
+            case ORB_IDLE:       return 0xA24BFF;  // purple
+            case ORB_LISTENING:  return 0x38D6FF;  // cyan
+            case ORB_PROCESSING: return 0x2B7FD6;  // blue
+            case ORB_RESPONDING: return 0x2FD6A0;  // green
+            case ORB_ERROR:      return 0xFF4D4D;  // red
+        }
+        return 0xA24BFF;
+    }
+
+    // Paint the orb gradient a given core color (bright center -> transparent edge).
+    void ApplyOrbColor(uint32_t core) {
+        if (orb_ == nullptr) return;
+        lv_color_t c = lv_color_hex(core);
+        orb_grad_.stops[0].color = c;
+        orb_grad_.stops[0].opa   = LV_OPA_COVER;
+        orb_grad_.stops[0].frac  = 0;
+        orb_grad_.stops[1].color = c;
+        orb_grad_.stops[1].opa   = LV_OPA_TRANSP;
+        orb_grad_.stops[1].frac  = 255;
+        orb_grad_.stops_count = 2;
+        lv_obj_set_style_bg_color(orb_, c, 0);
+        lv_obj_set_style_bg_grad(orb_, &orb_grad_, 0);
+        lv_obj_set_style_bg_opa(orb_, LV_OPA_COVER, 0);
+        lv_obj_invalidate(orb_);  // same grad pointer -> force a repaint on color change
+    }
+
+    // Set base color + (re)start the per-state motion animation.
+    void SetOrbState(OrbState s) {
+        if (orb_ == nullptr) return;
+        orb_state_ = s;
+        ApplyOrbColor(StateCore(s));
+
+        lv_anim_delete(this, OrbAnimCb);  // clear prior motion
+        int dur;
+        switch (s) {
+            case ORB_IDLE:       dur = 2200; break;
+            case ORB_LISTENING:  dur = 1000; break;
+            case ORB_PROCESSING: dur = 450;  break;
+            case ORB_RESPONDING: dur = 320;  break;
+            case ORB_ERROR:      dur = 220;  break;
+            default:             dur = 1000; break;
+        }
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, this);
+        lv_anim_set_exec_cb(&a, OrbAnimCb);
+        lv_anim_set_values(&a, 0, 1000);
+        lv_anim_set_duration(&a, dur);
+        lv_anim_set_reverse_duration(&a, dur);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_start(&a);
+    }
+
+    // t in [0,1000] -> opacity + scale, shaped per state.
+    static void OrbAnimCb(void* var, int32_t t) {
+        auto* self = static_cast<CustomLcdDisplay*>(var);
+        if (self->orb_ == nullptr) return;
+        int32_t opa, scale;
+        switch (self->orb_state_) {
+            case ORB_IDLE:       opa = 60 + t * 120 / 1000; scale = 250 + t * 16 / 1000; break;
+            case ORB_LISTENING:  opa = 120 + t * 110 / 1000; scale = 250 + t * 24 / 1000; break;
+            case ORB_PROCESSING: opa = 150 + t * 105 / 1000; scale = 248 + t * 40 / 1000; break;
+            case ORB_RESPONDING: opa = 150 + t * 105 / 1000; scale = 245 + t * 55 / 1000; break;
+            case ORB_ERROR:      opa = 90 + t * 165 / 1000; scale = 256; break;
+            default:             opa = 200; scale = 256; break;
+        }
+        lv_obj_set_style_opa(self->orb_, (lv_opa_t)opa, 0);
+        lv_obj_set_style_transform_scale_x(self->orb_, scale, 0);
+        lv_obj_set_style_transform_scale_y(self->orb_, scale, 0);
+    }
+
+    // Map device state -> orb base state. `processing` is sticky over listening
+    // (it has no native device state; entered from SetEmotion, held until speak/idle).
+    void SyncOrbToDeviceState() {
+        DeviceState ds = Application::GetInstance().GetDeviceState();
+        OrbState want;
+        switch (ds) {
+            case kDeviceStateSpeaking:   want = ORB_RESPONDING; break;
+            case kDeviceStateListening:
+            case kDeviceStateConnecting:
+                want = (orb_state_ == ORB_PROCESSING) ? ORB_PROCESSING : ORB_LISTENING;
+                break;
+            case kDeviceStateFatalError: want = ORB_ERROR; break;
+            case kDeviceStateIdle:       want = ORB_IDLE; break;
+            default:                     return;  // starting/upgrading/etc: leave as-is
+        }
+        if (want == ORB_RESPONDING && orb_state_ == ORB_RESPONDING) {
+            ApplyResponseTint();  // keep the emotion tint fresh while speaking
+            return;
+        }
+        if (want != orb_state_) SetOrbState(want);
+    }
+
+    // Emotion nudges the responding-green (small category table; no sentiment inference).
+    void ApplyResponseTint() {
+        uint32_t c = 0x2FD6A0;  // base green
+        const std::string& e = last_emotion_;
+        if (e == "angry")                                   c = 0xE06B2F;  // hot override
+        else if (e == "shocked" || e == "surprised")        c = 0x8AFFE0;  // bright flash
+        else if (e == "sad" || e == "crying" || e == "sleepy") c = 0x1E8F6E;  // dim
+        else if (e == "happy" || e == "laughing" || e == "funny" || e == "loving" ||
+                 e == "delicious" || e == "confident" || e == "cool" || e == "relaxed" ||
+                 e == "kissy" || e == "winking" || e == "silly" || e == "embarrassed")
+            c = 0x5CF0C0;  // warm/bright
+        ApplyOrbColor(c);
     }
 };
 
@@ -423,9 +656,16 @@ public:
         // 显示和背光可用后再初始化省电逻辑，避免空指针
         InitializePowerSaveTimer();
         InitializePowerManager();
+
+        // Fork (dashboard+orb): firmware-owned weather fetch (decision B).
+        StartWeatherTask();
     }
 
     ~Spotpear_ESP32_S3_1_28_BOX() {
+        if (weather_task_) {
+            vTaskDelete(weather_task_);
+            weather_task_ = nullptr;
+        }
         if (touchpad_timer_) {
             esp_timer_stop(touchpad_timer_);
             esp_timer_delete(touchpad_timer_);
@@ -519,6 +759,69 @@ public:
             power_save_timer_->WakeUp();
         }
         WifiBoard::SetPowerSaveLevel(level);
+    }
+
+private:
+    // --- Fork (dashboard+orb): firmware-owned weather (Open-Meteo, decision B) ---
+    // A dedicated task because the Http API is blocking — never on the LVGL thread.
+    // Config lives in NVS Settings("weather"): lat, lon, units (C/F), interval_min.
+    TaskHandle_t weather_task_ = nullptr;
+
+    void StartWeatherTask() {
+        // 8 KB stack: TLS handshake + cJSON need headroom.
+        xTaskCreate(WeatherTask, "weather", 8192, this, 3, &weather_task_);
+    }
+
+    static void WeatherTask(void* arg) {
+        auto* self = static_cast<Spotpear_ESP32_S3_1_28_BOX*>(arg);
+        for (;;) {
+            int interval_min = 15;
+            bool ok = self->FetchWeatherOnce(interval_min);
+            // Retry fast until the first success (wifi may not be up yet), then
+            // settle to the configured cadence. Last-known temp stays on screen.
+            uint32_t wait_ms = ok ? (uint32_t)interval_min * 60 * 1000 : 30 * 1000;
+            vTaskDelay(pdMS_TO_TICKS(wait_ms));
+        }
+    }
+
+    bool FetchWeatherOnce(int& interval_min_out) {
+        Settings settings("weather", false);
+        std::string lat = settings.GetString("lat", "-23.55");   // default: São Paulo
+        std::string lon = settings.GetString("lon", "-46.63");
+        std::string units = settings.GetString("units", "C");
+        interval_min_out = settings.GetInt("interval_min", 15);
+        if (interval_min_out < 1) interval_min_out = 15;
+
+        char url[256];
+        snprintf(url, sizeof(url),
+                 "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&current=temperature_2m",
+                 lat.c_str(), lon.c_str());
+
+        auto network = Board::GetInstance().GetNetwork();
+        if (network == nullptr) return false;
+        auto http = network->CreateHttp(0);
+        if (!http || !http->Open("GET", url)) return false;
+        if (http->GetStatusCode() != 200) { http->Close(); return false; }
+        std::string body = http->ReadAll();
+        http->Close();
+
+        cJSON* root = cJSON_Parse(body.c_str());
+        if (root == nullptr) return false;
+        bool ok = false;
+        cJSON* current = cJSON_GetObjectItem(root, "current");
+        if (cJSON_IsObject(current)) {
+            cJSON* t = cJSON_GetObjectItem(current, "temperature_2m");
+            if (cJSON_IsNumber(t)) {
+                float c = (float)t->valuedouble;
+                if (units == "F" || units == "f") c = c * 9.0f / 5.0f + 32.0f;
+                if (display_ != nullptr) {
+                    static_cast<CustomLcdDisplay*>(display_)->SetTemperature(c, true);
+                }
+                ok = true;
+            }
+        }
+        cJSON_Delete(root);
+        return ok;
     }
 };
 
