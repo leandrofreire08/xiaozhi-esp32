@@ -1,4 +1,63 @@
+# xiaozhi-esp32 — `if-my-hermes-speak` fork
+
+> This is a **fork** of [`78/xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32)
+> (MIT) — the ESP32-S3 firmware for the
+> [**if-my-hermes-speak**](https://github.com/leandrofreire08/if-my-hermes-speak)
+> voice device, which turns a Spotpear 1.28" BOX into a voice channel for the
+> [Hermes Agent](https://github.com/NousResearch/hermes-agent). It is consumed by
+> the parent repo as a **git submodule**. Upstream's original README is preserved
+> below.
+
+## What this fork adds
+
+Target board: **Spotpear ESP32-S3 1.28" BOX** (`main/boards/sp-esp32-s3-1.28-box/`)
+— round **GC9A01** 240×240 LCD, **ES8311** duplex codec, **CST816D** touch.
+
+- **One-shot voice loop + server-side VAD** — the device runs in auto-mode and
+  never sends `listen stop`; the adapter drives end-of-turn. A `system:sleep`
+  control ends the conversation after the reply's TTS.
+- **Wake-word gating** — stock WakeNet **"Alexa"** (custom "Hey Hermes" planned).
+- **Ambient dashboard + reactive orb display** (`CustomLcdDisplay` in the board
+  file) — supersedes the face-avatar rendering. Three stacked bands on the round
+  panel: big clock + date (top), a **reactive orb** pill (middle), and
+  `temp° · wifi · date` (bottom). The orb encodes the turn state by color + motion
+  (idle→purple, listening→cyan, processing→blue, responding→green, error→red) and
+  is tinted by the assistant's emotion while speaking. Real-time LVGL radial
+  gradient + `lv_anim` (enables `CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS`).
+- **Firmware-owned weather** — Open-Meteo current temperature fetched on-device
+  (no server dependency), configured via NVS `Settings("weather")`
+  (`lat`/`lon`/`units`/`interval_min`). CC BY 4.0 credit shown ("Open-Meteo").
+
+## Build & flash
+
+Needs [**ESP-IDF v6.0.2**](https://docs.espressif.com/projects/esp-idf/en/latest/):
+
+```bash
+source ~/esp/esp-idf-v6.0.2/export.sh
+cd firmware/xiaozhi-esp32           # (this dir, when cloned via the parent submodule)
+idf.py build
+idf.py -p /dev/cu.usbmodem2101 flash        # full flash (sdkconfig / model / partition change)
+# idf.py -p /dev/cu.usbmodem2101 app-flash  # code-only change
+```
+
+The NVS seed at `0x9000` (wifi + ws endpoint + device token) survives flashes.
+Device secrets (`nvs_seed.*`, bringup) are **gitignored** — never commit them.
+
+## Remotes & contributing
+
+- `origin` → upstream [`78/xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32)
+  (pull updates via `git merge`; no write access).
+- `fork` → [`leandrofreire08/xiaozhi-esp32`](https://github.com/leandrofreire08/xiaozhi-esp32)
+  (push fork work here). Fork PRs use base `fork/hermes-voice-loop`.
+
+License unchanged: **MIT** (see [`LICENSE`](./LICENSE), © Shenzhen Xinzhi Future
+Technology). Fork changes are MIT too.
+
+---
+
 # An MCP-based Chatbot
+
+*(Upstream README below.)*
 
 (English | [中文](README_zh.md) | [日本語](README_ja.md))
 
