@@ -243,6 +243,13 @@ public:
         SpiLcdDisplay::UpdateStatusBar(update_all);  // battery/mute (hidden) upkeep
         DisplayLockGuard lock(this);
 
+        // WiFi-config screen owns the panel while provisioning; the dashboard
+        // restores itself once the state leaves kDeviceStateWifiConfiguring.
+        bool configuring =
+            Application::GetInstance().GetDeviceState() == kDeviceStateWifiConfiguring;
+        if (configuring != config_mode_) SetConfigMode(configuring);
+        if (configuring) { RefreshConfigSsid(); return; }
+
         time_t now = time(NULL);
         struct tm* tm = localtime(&now);
         if (tm != nullptr && tm->tm_year >= 2025 - 1900 && time_label_ != nullptr) {
@@ -295,6 +302,65 @@ private:
         }
     }
 
+    static void SetHidden(lv_obj_t* o, bool hide) {
+        if (o == nullptr) return;
+        if (hide) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else      lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // WiFi-config screen. Reuses the pulsing purple orb (ORB_IDLE) on the black
+    // background (ForceBlackBackground) and swaps the clock/weather dashboard for
+    // "Conecte-se a" + the AP SSID (HermesOrb-XXXX) + "192.168.4.1".
+    void BuildConfigUI() {
+        lv_obj_t* screen = lv_screen_active();
+
+        cfg_title_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(cfg_title_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(cfg_title_, lv_color_hex(0xFFFFFF), 0);
+        lv_label_set_text(cfg_title_, "Conecte-se a");
+        lv_obj_align(cfg_title_, LV_ALIGN_CENTER, 0, -82);
+
+        cfg_ssid_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(cfg_ssid_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(cfg_ssid_, lv_color_hex(0xA24BFF), 0);  // orb accent
+        lv_label_set_text(cfg_ssid_, "HermesOrb");
+        lv_obj_align(cfg_ssid_, LV_ALIGN_CENTER, 0, 78);
+
+        cfg_ip_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(cfg_ip_, &font_puhui_16_4, 0);
+        lv_obj_set_style_text_color(cfg_ip_, lv_color_hex(0x8EA1B8), 0);
+        lv_label_set_text(cfg_ip_, "192.168.4.1");
+        lv_obj_align(cfg_ip_, LV_ALIGN_CENTER, 0, 100);
+    }
+
+    // Toggle the dashboard chrome off / config text on (the orb is shared and stays).
+    void SetConfigMode(bool on) {
+        config_mode_ = on;
+        if (on && cfg_title_ == nullptr) BuildConfigUI();
+        SetHidden(time_label_, on);
+        SetHidden(date_label_, on);
+        SetHidden(battery_top_, on);
+        SetHidden(temp_label_, on);   // bottom row has no bg -> hiding its
+        SetHidden(wifi_label_, on);   // labels makes the row invisible
+        SetHidden(cfg_title_, !on);
+        SetHidden(cfg_ssid_, !on);
+        SetHidden(cfg_ip_, !on);
+        if (on) {
+            RefreshConfigSsid();
+            SetOrbState(ORB_IDLE);  // pulsing purple during provisioning
+        }
+    }
+
+    // The AP SSID is only known once StartConfigAp() runs; refresh every tick so
+    // the label self-heals if the first tick raced ahead of the AP coming up.
+    void RefreshConfigSsid() {
+        if (cfg_ssid_ == nullptr) return;
+        std::string ssid = WifiManager::GetInstance().GetApSsid();
+        if (!ssid.empty() && ssid != lv_label_get_text(cfg_ssid_)) {
+            lv_label_set_text(cfg_ssid_, ssid.c_str());
+        }
+    }
+
     // Orb geometry — tune here. Equal W/H + LV_RADIUS_CIRCLE = a round orb.
     // Widen kOrbW past kOrbH to go back toward the old elongated pill.
     static constexpr int kOrbW = 96;
@@ -313,6 +379,12 @@ private:
     lv_grad_dsc_t orb_grad_{};
     OrbState orb_state_ = ORB_IDLE;
     std::string last_emotion_ = "neutral";
+
+    // WiFi-config screen widgets (lazy-built on first entry).
+    lv_obj_t* cfg_title_ = nullptr;
+    lv_obj_t* cfg_ssid_ = nullptr;
+    lv_obj_t* cfg_ip_ = nullptr;
+    bool config_mode_ = false;
 
     static uint32_t StateCore(OrbState s) {
         switch (s) {

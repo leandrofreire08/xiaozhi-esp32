@@ -27,6 +27,15 @@ Target board: **Spotpear ESP32-S3 1.28" BOX** (`main/boards/sp-esp32-s3-1.28-box
 - **Firmware-owned weather** — Open-Meteo current temperature fetched on-device
   (no server dependency), configured via NVS `Settings("weather")`
   (`lat`/`lon`/`units`/`interval_min`). See [Attribution](#attribution) below.
+- **Hermes Orb first-use setup** — on an unprovisioned device the board raises a
+  SoftAP named **`HermesOrb-XXXX`** and serves an orb-branded captive portal
+  (purple `#A24BFF` on black) at `192.168.4.1`; the LCD shows a config-mode screen
+  with the AP name. The portal collects Wi-Fi **plus** the Hermes ws endpoint —
+  the `ws_url` / `token` fields are written to NVS namespace `websocket`
+  (keys `url` / `token`), read by `WebsocketProtocol` on next boot. The portal
+  HTML + `/submit` handler live under `managed_components/` (upstream WiFi
+  provisioning component); edits there are versioned in the fork but may be
+  overwritten on a component update.
 
 ## Build & flash
 
