@@ -213,7 +213,7 @@ public:
         lv_obj_set_style_transform_scale(wifi_label_, kWifiScale, 0);
         lv_label_set_text(wifi_label_, "");
 
-        SetOrbState(ORB_IDLE);
+        SetBootSplash(true);  // boot: only the hue-cycling orb until network + clock are ready
     }
 
     // Assets::Apply() calls SetTheme(current_theme) after boot (the "light" theme
@@ -249,6 +249,16 @@ public:
             Application::GetInstance().GetDeviceState() == kDeviceStateWifiConfiguring;
         if (configuring != config_mode_) SetConfigMode(configuring);
         if (configuring) { RefreshConfigSsid(); return; }
+
+        // Boot splash owns the panel (only the hue-cycling orb) until the clock is
+        // valid — SNTP needs connectivity, so a real year means we reached the
+        // network and have data to show. Then reveal the dashboard.
+        if (booting_) {
+            time_t bnow = time(NULL);
+            struct tm* btm = localtime(&bnow);
+            if (btm != nullptr && btm->tm_year >= 2025 - 1900) SetBootSplash(false);
+            else return;
+        }
 
         time_t now = time(NULL);
         struct tm* tm = localtime(&now);
@@ -337,11 +347,8 @@ private:
     void SetConfigMode(bool on) {
         config_mode_ = on;
         if (on && cfg_title_ == nullptr) BuildConfigUI();
-        SetHidden(time_label_, on);
-        SetHidden(date_label_, on);
-        SetHidden(battery_top_, on);
-        SetHidden(temp_label_, on);   // bottom row has no bg -> hiding its
-        SetHidden(wifi_label_, on);   // labels makes the row invisible
+        if (on) { booting_ = false; StopBootHue(); }  // config owns the orb (steady purple)
+        SetDashboardChromeHidden(on);
         SetHidden(cfg_title_, !on);
         SetHidden(cfg_ssid_, !on);
         SetHidden(cfg_ip_, !on);
@@ -359,6 +366,47 @@ private:
         if (!ssid.empty() && ssid != lv_label_get_text(cfg_ssid_)) {
             lv_label_set_text(cfg_ssid_, ssid.c_str());
         }
+    }
+
+    // --- Boot splash -------------------------------------------------------
+    // At boot the dashboard would show empty placeholders (--:--, --deg, no wifi).
+    // Instead show only the orb — breathing and cycling hue — until the clock is
+    // valid (=> network reached + data ready), then reveal the dashboard.
+    void SetDashboardChromeHidden(bool hide) {
+        SetHidden(time_label_, hide);
+        SetHidden(date_label_, hide);
+        SetHidden(battery_top_, hide);
+        SetHidden(temp_label_, hide);   // bottom row has no bg -> hiding its
+        SetHidden(wifi_label_, hide);   // labels makes the row invisible
+    }
+
+    void SetBootSplash(bool on) {
+        booting_ = on;
+        SetDashboardChromeHidden(on);
+        if (on) {
+            SetOrbState(ORB_LISTENING);  // medium breathing; hue timer recolors it
+            if (boot_hue_timer_ == nullptr)
+                boot_hue_timer_ = lv_timer_create(BootHueCb, 40, this);
+        } else {
+            StopBootHue();  // UpdateStatusBar + SyncOrbToDeviceState take the orb back
+        }
+    }
+
+    void StopBootHue() {
+        if (boot_hue_timer_ != nullptr) {
+            lv_timer_delete(boot_hue_timer_);
+            boot_hue_timer_ = nullptr;
+        }
+    }
+
+    // Smooth rainbow sweep while booting (runs on the LVGL task via lv_timer).
+    static void BootHueCb(lv_timer_t* t) {
+        auto* self = static_cast<CustomLcdDisplay*>(lv_timer_get_user_data(t));
+        if (self->orb_ == nullptr) return;
+        self->boot_hue_ = (self->boot_hue_ + 3) % 360;
+        lv_color_t c = lv_color_hsv_to_rgb(self->boot_hue_, 85, 100);
+        uint32_t hex = ((uint32_t)c.red << 16) | ((uint32_t)c.green << 8) | c.blue;
+        self->ApplyOrbColor(hex);
     }
 
     // Orb geometry — tune here. Equal W/H + LV_RADIUS_CIRCLE = a round orb.
@@ -385,6 +433,11 @@ private:
     lv_obj_t* cfg_ssid_ = nullptr;
     lv_obj_t* cfg_ip_ = nullptr;
     bool config_mode_ = false;
+
+    // Boot splash: only the hue-cycling orb until the network + clock are ready.
+    bool booting_ = true;
+    lv_timer_t* boot_hue_timer_ = nullptr;
+    uint16_t boot_hue_ = 0;
 
     static uint32_t StateCore(OrbState s) {
         switch (s) {
