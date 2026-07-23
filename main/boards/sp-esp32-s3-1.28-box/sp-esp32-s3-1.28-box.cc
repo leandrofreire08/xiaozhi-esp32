@@ -1,4 +1,6 @@
 #include "wifi_board.h"
+#include <wifi_manager.h>                        // Fork: gate weather fetch on live connection
+#include <esp_sntp.h>                            // Fork: SNTP clock (no OTA/activation server)
 #include "codecs/es8311_audio_codec.h"
 #include "display/lcd_display.h"
 #include "lvgl_theme.h"                        // Fork: LvglTheme::set_emoji_collection
@@ -148,6 +150,8 @@ public:
         lv_obj_t* screen = lv_screen_active();
         auto icon_font = static_cast<LvglTheme*>(current_theme_)->icon_font()->font();
 
+        ForceBlackBackground();
+
         // --- Middle band: the orb (radial-gradient pill) ---
         orb_ = lv_obj_create(screen);
         lv_obj_remove_style_all(orb_);
@@ -175,6 +179,14 @@ public:
         lv_label_set_text(date_label_, "");
         lv_obj_align(date_label_, LV_ALIGN_TOP_MID, 0, 82);
 
+        // Battery indicator — top center, above the clock. Mirrors the base-
+        // computed battery glyph (from Board::GetBatteryLevel) in UpdateStatusBar.
+        battery_top_ = lv_label_create(screen);
+        lv_obj_set_style_text_font(battery_top_, icon_font, 0);
+        lv_obj_set_style_text_color(battery_top_, lv_color_hex(0xC7D3E0), 0);
+        lv_label_set_text(battery_top_, "");
+        lv_obj_align(battery_top_, LV_ALIGN_TOP_MID, 0, 6);
+
         // --- Bottom band: temp · wifi · short date ---
         lv_obj_t* row = lv_obj_create(screen);
         lv_obj_remove_style_all(row);
@@ -194,21 +206,23 @@ public:
         wifi_label_ = lv_label_create(row);
         lv_obj_set_style_text_font(wifi_label_, icon_font, 0);
         lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0x8EA1B8), 0);
+        // The 16px icon glyph reads taller than the 16px temp digits — scale it
+        // down to match. Tune kWifiScale (256 = 100%).
+        lv_obj_set_style_transform_pivot_x(wifi_label_, LV_PCT(50), 0);
+        lv_obj_set_style_transform_pivot_y(wifi_label_, LV_PCT(50), 0);
+        lv_obj_set_style_transform_scale(wifi_label_, kWifiScale, 0);
         lv_label_set_text(wifi_label_, "");
 
-        botdate_label_ = lv_label_create(row);
-        lv_obj_set_style_text_font(botdate_label_, &font_puhui_16_4, 0);
-        lv_obj_set_style_text_color(botdate_label_, lv_color_hex(0x8EA1B8), 0);
-        lv_label_set_text(botdate_label_, "");
-
-        // Open-Meteo attribution (CC BY 4.0)
-        credit_label_ = lv_label_create(screen);
-        lv_obj_set_style_text_font(credit_label_, &font_puhui_16_4, 0);
-        lv_obj_set_style_text_color(credit_label_, lv_color_hex(0x3A4656), 0);
-        lv_label_set_text(credit_label_, "Open-Meteo");
-        lv_obj_align(credit_label_, LV_ALIGN_BOTTOM_MID, 0, -12);
-
         SetOrbState(ORB_IDLE);
+    }
+
+    // Assets::Apply() calls SetTheme(current_theme) after boot (the "light" theme
+    // from NVS repaints the panel white right after the greeting cue). Re-force
+    // black after every theme repaint so the dashboard stays black-on-black.
+    virtual void SetTheme(Theme* theme) override {
+        SpiLcdDisplay::SetTheme(theme);
+        DisplayLockGuard lock(this);
+        ForceBlackBackground();
     }
 
     // Orb reacts to emotion (`llm` message). While speaking -> tint the green;
@@ -235,16 +249,22 @@ public:
             char buf[16];
             strftime(buf, sizeof(buf), "%H:%M", tm);
             lv_label_set_text(time_label_, buf);
+            // pt-BR names — newlib has no pt_BR locale, so map by hand.
+            static const char* kWd[7]  = {"Dom","Seg","Ter","Qua","Qui","Sex","S\xC3\xA1""b"};
+            static const char* kMon[12] = {"Jan","Fev","Mar","Abr","Mai","Jun",
+                                           "Jul","Ago","Set","Out","Nov","Dez"};
             char dbuf[24];
-            strftime(dbuf, sizeof(dbuf), "%a %d %b", tm);
+            snprintf(dbuf, sizeof(dbuf), "%s %02d %s",
+                     kWd[tm->tm_wday % 7], tm->tm_mday, kMon[tm->tm_mon % 12]);
             lv_label_set_text(date_label_, dbuf);
-            char sbuf[12];
-            strftime(sbuf, sizeof(sbuf), "%d %b", tm);
-            lv_label_set_text(botdate_label_, sbuf);
         }
         // Mirror the base-computed wifi/network icon into the bottom row.
         if (wifi_label_ != nullptr && network_label_ != nullptr) {
             lv_label_set_text(wifi_label_, lv_label_get_text(network_label_));
+        }
+        // Mirror the base-computed battery glyph into the top-center indicator.
+        if (battery_top_ != nullptr && battery_label_ != nullptr) {
+            lv_label_set_text(battery_top_, lv_label_get_text(battery_label_));
         }
         SyncOrbToDeviceState();
     }
@@ -259,17 +279,37 @@ public:
     }
 
 private:
-    static constexpr int kOrbW = 150;
-    static constexpr int kOrbH = 46;
+    // Paint the whole panel black regardless of the active theme: screen +
+    // container_ opaque black, content_ (chat area) transparent so it shows
+    // through. Idempotent — safe to call from SetupUI and after every SetTheme.
+    void ForceBlackBackground() {
+        lv_obj_t* screen = lv_screen_active();
+        lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+        if (container_ != nullptr) {
+            lv_obj_set_style_bg_color(container_, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_bg_opa(container_, LV_OPA_COVER, 0);
+        }
+        if (content_ != nullptr) {
+            lv_obj_set_style_bg_opa(content_, LV_OPA_TRANSP, 0);
+        }
+    }
+
+    // Orb geometry — tune here. Equal W/H + LV_RADIUS_CIRCLE = a round orb.
+    // Widen kOrbW past kOrbH to go back toward the old elongated pill.
+    static constexpr int kOrbW = 96;
+    static constexpr int kOrbH = 96;
     static constexpr int kOrbY = 4;
+
+    // Wifi icon scale (256 = 100%). ~0.78 makes the 16px glyph match the temp.
+    static constexpr int kWifiScale = 200;
 
     lv_obj_t* orb_ = nullptr;
     lv_obj_t* time_label_ = nullptr;
     lv_obj_t* date_label_ = nullptr;
     lv_obj_t* temp_label_ = nullptr;
     lv_obj_t* wifi_label_ = nullptr;
-    lv_obj_t* botdate_label_ = nullptr;
-    lv_obj_t* credit_label_ = nullptr;
+    lv_obj_t* battery_top_ = nullptr;
     lv_grad_dsc_t orb_grad_{};
     OrbState orb_state_ = ORB_IDLE;
     std::string last_emotion_ = "neutral";
@@ -772,13 +812,42 @@ private:
         xTaskCreate(WeatherTask, "weather", 8192, this, 3, &weather_task_);
     }
 
+    bool time_sync_started_ = false;
+
+    // SNTP clock. TZ from NVS Settings("weather","tz"); default UTC-3 (Brazil,
+    // no DST) — matches the São Paulo weather default. POSIX TZ string.
+    void StartTimeSync() {
+        Settings settings("weather", false);
+        std::string tz = settings.GetString("tz", "<-03>3");
+        setenv("TZ", tz.c_str(), 1);
+        tzset();
+        esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, "pool.ntp.org");
+        esp_sntp_init();
+        ESP_LOGI(TAG, "SNTP started (TZ=%s)", tz.c_str());
+    }
+
     static void WeatherTask(void* arg) {
         auto* self = static_cast<Spotpear_ESP32_S3_1_28_BOX*>(arg);
         for (;;) {
+            // getaddrinfo() before the tcpip stack / wifi is up hard-asserts
+            // ("Invalid mbox" -> reboot loop), it does NOT return an error — so
+            // gate every fetch on a live connection instead of relying on
+            // FetchWeatherOnce failing gracefully.
+            if (!WifiManager::GetInstance().IsConnected()) {
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                continue;
+            }
+            // No OTA/activation server here, so no server_time -> the clock would
+            // stay "--:--". Start SNTP once, on the same wifi-gated path.
+            if (!self->time_sync_started_) {
+                self->time_sync_started_ = true;
+                self->StartTimeSync();
+            }
             int interval_min = 15;
             bool ok = self->FetchWeatherOnce(interval_min);
-            // Retry fast until the first success (wifi may not be up yet), then
-            // settle to the configured cadence. Last-known temp stays on screen.
+            // Retry fast until the first success, then settle to the configured
+            // cadence. Last-known temp stays on screen.
             uint32_t wait_ms = ok ? (uint32_t)interval_min * 60 * 1000 : 30 * 1000;
             vTaskDelay(pdMS_TO_TICKS(wait_ms));
         }

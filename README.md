@@ -26,7 +26,7 @@ Target board: **Spotpear ESP32-S3 1.28" BOX** (`main/boards/sp-esp32-s3-1.28-box
   gradient + `lv_anim` (enables `CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS`).
 - **Firmware-owned weather** — Open-Meteo current temperature fetched on-device
   (no server dependency), configured via NVS `Settings("weather")`
-  (`lat`/`lon`/`units`/`interval_min`). CC BY 4.0 credit shown ("Open-Meteo").
+  (`lat`/`lon`/`units`/`interval_min`). See [Attribution](#attribution) below.
 
 ## Build & flash
 
@@ -52,6 +52,12 @@ Device secrets (`nvs_seed.*`, bringup) are **gitignored** — never commit them.
 
 License unchanged: **MIT** (see [`LICENSE`](./LICENSE), © Shenzhen Xinzhi Future
 Technology). Fork changes are MIT too.
+
+## Attribution
+
+Weather data by [**Open-Meteo.com**](https://open-meteo.com), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The firmware-owned
+weather feature fetches current temperature from the Open-Meteo API.
 
 ---
 
