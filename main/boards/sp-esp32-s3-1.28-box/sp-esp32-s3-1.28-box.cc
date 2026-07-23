@@ -237,6 +237,42 @@ public:
         }
     }
 
+    // Orb-focus: the moment the device wakes (wake word or screen tap => state
+    // leaves idle, first to `connecting`), hide every dashboard widget so only
+    // the orb + its feedback remain; on the return to idle, fade the whole
+    // dashboard back. HandleStateChangedEvent (application.cc:943) calls
+    // SetStatus on exactly these transitions, so this fires instantly — no 1Hz
+    // poll lag. Boot splash owns the chrome until the clock is valid, so skip
+    // while booting_. WiFi-config / activating / upgrading fall to default and
+    // are left untouched (config mode manages its own panel).
+    virtual void SetStatus(const char* status) override {
+        SpiLcdDisplay::SetStatus(status);  // base upkeep (takes its own lock)
+        if (booting_) return;
+        DisplayLockGuard lock(this);
+        // Edge-triggered: act only on an actual shown<->hidden change.
+        // SetStatus(STANDBY) is re-asserted periodically while idle, so an
+        // unguarded RevealDashboard() here replays its 600ms fade every few
+        // seconds (the dashboard visibly blinks). Track state, toggle once.
+        switch (Application::GetInstance().GetDeviceState()) {
+            case kDeviceStateConnecting:
+            case kDeviceStateListening:
+            case kDeviceStateSpeaking:
+                if (!chrome_hidden_) {
+                    SetDashboardChromeHidden(true);  // orb-only, instant
+                    chrome_hidden_ = true;
+                }
+                break;
+            case kDeviceStateIdle:
+                if (chrome_hidden_) {
+                    RevealDashboard();               // dashboard back (600ms fade)
+                    chrome_hidden_ = false;
+                }
+                break;
+            default:
+                break;  // wifi-config / activating / upgrading: leave as-is
+        }
+    }
+
     // Per-second heartbeat (application.cc clock tick): refresh clock/date/wifi
     // and re-sync the orb to the device state.
     virtual void UpdateStatusBar(bool update_all = false) override {
@@ -449,6 +485,7 @@ private:
 
     // Boot splash: only the hue-cycling orb until the network + clock are ready.
     bool booting_ = true;
+    bool chrome_hidden_ = false;  // dashboard hidden (orb-only) vs shown; edge-guards SetStatus toggling
     lv_timer_t* boot_hue_timer_ = nullptr;
     uint16_t boot_hue_ = 0;
 
