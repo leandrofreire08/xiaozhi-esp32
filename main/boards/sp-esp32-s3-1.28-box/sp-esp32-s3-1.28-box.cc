@@ -382,13 +382,26 @@ private:
 
     void SetBootSplash(bool on) {
         booting_ = on;
-        SetDashboardChromeHidden(on);
         if (on) {
+            SetDashboardChromeHidden(true);
             SetOrbState(ORB_LISTENING);  // medium breathing; hue timer recolors it
             if (boot_hue_timer_ == nullptr)
                 boot_hue_timer_ = lv_timer_create(BootHueCb, 40, this);
         } else {
             StopBootHue();  // UpdateStatusBar + SyncOrbToDeviceState take the orb back
+            RevealDashboard();
+        }
+    }
+
+    // Unhide all dashboard chrome and fade it in together (opa 0 -> cover). The
+    // caller populates real text the same tick, so the fade shows live values.
+    void RevealDashboard() {
+        lv_obj_t* els[] = { time_label_, date_label_, battery_top_,
+                            temp_label_, wifi_label_ };
+        for (lv_obj_t* e : els) {
+            if (e == nullptr) continue;
+            lv_obj_remove_flag(e, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_fade_in(e, 600, 0);  // all delay 0 -> appear simultaneously
         }
     }
 
