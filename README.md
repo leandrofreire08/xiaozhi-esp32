@@ -24,6 +24,11 @@ Target board: **Spotpear ESP32-S3 1.28" BOX** (`main/boards/sp-esp32-s3-1.28-box
   (idle→purple, listening→cyan, processing→blue, responding→green, error→red) and
   is tinted by the assistant's emotion while speaking. Real-time LVGL radial
   gradient + `lv_anim` (enables `CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS`).
+- **Boot splash** — during boot the panel shows only the orb, breathing and
+  cycling hue (smooth HSV rainbow), instead of empty placeholders. Once the
+  clock is valid (SNTP synced → device reached the network and has data), the
+  dashboard chrome (clock, date, battery, temp, wifi) un-hides and fades in
+  together (`lv_obj_fade_in`, 600 ms).
 - **Firmware-owned weather** — Open-Meteo current temperature fetched on-device
   (no server dependency), configured via NVS `Settings("weather")`
   (`lat`/`lon`/`units`/`interval_min`). See [Attribution](#attribution) below.
