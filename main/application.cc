@@ -296,8 +296,28 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_VAD_CHANGE) {
             if (GetDeviceState() == kDeviceStateListening) {
-                auto led = Board::GetInstance().GetLed();
-                led->OnStateChanged();
+                auto& board = Board::GetInstance();
+                board.GetLed()->OnStateChanged();
+                if (audio_service_.IsVoiceDetected()) {
+                    vad_saw_speech_ = true;  // real speech has begun this session
+                }
+                // Device-local endpointing: the on-board AFE VAD (WebRTC, with the
+                // vad_min_noise_ms hangover) has decided the user stopped talking.
+                // End the turn NOW instead of waiting for the server VAD + its
+                // round-trip: flip the orb to "processing" instantly and tell the
+                // server to finalize. Only AFTER real speech (vad_saw_speech_), so a
+                // silence edge on a fresh listen — e.g. a multi-turn re-listen
+                // before the user answers — doesn't finalize an empty turn and cut
+                // the follow-up. One-shot per session, auto mode only.
+                if (listening_mode_ == kListeningModeAutoStop &&
+                    !auto_stop_sent_ &&
+                    vad_saw_speech_ &&
+                    !audio_service_.IsVoiceDetected() &&
+                    protocol_ && protocol_->IsAudioChannelOpened()) {
+                    auto_stop_sent_ = true;
+                    board.GetDisplay()->SetEmotion("thinking");  // orb → processing
+                    protocol_->SendStopListening();
+                }
             }
         }
 
@@ -972,6 +992,8 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
+            auto_stop_sent_ = false;  // new turn: re-allow one device-VAD end-of-speech stop
+            vad_saw_speech_ = false;  // require real speech before the device-VAD stop fires
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {

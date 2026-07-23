@@ -138,7 +138,12 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms, srmode
     afe_config->ns_init = false;
     afe_config->vad_init = kUseAfeForVoiceProcessing;
     afe_config->vad_mode = VAD_MODE_0;
-    afe_config->vad_min_noise_ms = 100;
+    // Trailing-silence hangover before the AFE flips to VAD_SILENCE. 700ms sits
+    // above natural mid-command pauses (~0.5-0.8s) so a pause doesn't end the
+    // turn, while giving the device its own fast end-of-speech signal (used in
+    // application.cc's MAIN_EVENT_VAD_CHANGE handler to SendStopListening +
+    // show "processing" without waiting for the server VAD round-trip).
+    afe_config->vad_min_noise_ms = 700;
     if (vad_model_name != nullptr) {
         afe_config->vad_model_name = vad_model_name;
     }

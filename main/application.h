@@ -148,6 +148,8 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
     bool pending_sleep_ = false;  // Fork: end-of-turn `system:sleep` — go idle once playback drains (one-shot, no-AEC)
+    bool auto_stop_sent_ = false;  // Fork: device-VAD end-of-speech already sent SendStopListening this turn (one-shot)
+    bool vad_saw_speech_ = false;  // Fork: real speech detected this listening session (gate device-VAD stop)
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
