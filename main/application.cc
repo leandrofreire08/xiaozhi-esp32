@@ -298,7 +298,17 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto& board = Board::GetInstance();
                 board.GetLed()->OnStateChanged();
-                if (audio_service_.IsVoiceDetected()) {
+                // No-AEC echo guard: for the first kEchoGuardUs after the AFE starts,
+                // ignore VAD detections — they are the just-drained TTS reply's acoustic
+                // tail, not the user. Latching saw_speech here would let the device-VAD
+                // endpoint fire on the echo (false "thinking" + empty finalize) and cut
+                // the follow-up. Tuning knob: raise if follow-ups still false-endpoint,
+                // lower if it clips a barge-in answer.
+                static constexpr int64_t kEchoGuardUs = 500000;  // 500 ms
+                bool in_echo_guard =
+                    listen_audio_start_us_ != 0 &&
+                    (esp_timer_get_time() - listen_audio_start_us_) < kEchoGuardUs;
+                if (!in_echo_guard && audio_service_.IsVoiceDetected()) {
                     vad_saw_speech_ = true;  // real speech has begun this session
                 }
                 // Device-local endpointing: the on-board AFE VAD (WebRTC, with the
@@ -1040,6 +1050,12 @@ void Application::StartListeningAudio() {
     // Send the start listening command
     protocol_->SendStartListening(listening_mode_);
     audio_service_.EnableVoiceProcessing(true);
+    // No-AEC echo guard: stamp when the AFE begins this listen. The just-drained
+    // TTS reply leaves an acoustic tail in the room that this mic (no reference
+    // channel) hears as voice; without a guard it latches vad_saw_speech_ and the
+    // device-VAD endpoint fires on the echo → false "thinking" + empty finalize
+    // that cuts the follow-up. VAD_CHANGE ignores detections within the guard.
+    listen_audio_start_us_ = esp_timer_get_time();
 
     ConfigureWakeWordForListening();
 

@@ -150,6 +150,7 @@ private:
     bool pending_sleep_ = false;  // Fork: end-of-turn `system:sleep` — go idle once playback drains (one-shot, no-AEC)
     bool auto_stop_sent_ = false;  // Fork: device-VAD end-of-speech already sent SendStopListening this turn (one-shot)
     bool vad_saw_speech_ = false;  // Fork: real speech detected this listening session (gate device-VAD stop)
+    int64_t listen_audio_start_us_ = 0;  // Fork: when the AFE started this listen (esp_timer us); gates the no-AEC echo tail
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
