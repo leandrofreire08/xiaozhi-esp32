@@ -499,7 +499,7 @@ private:
         switch (s) {
             case ORB_IDLE:       return 0xA24BFF;  // purple
             case ORB_LISTENING:  return 0x38D6FF;  // cyan
-            case ORB_PROCESSING: return 0x2B7FD6;  // blue
+            case ORB_PROCESSING: return 0xFF9500;  // orange (thinking) — distinct from listening-cyan
             case ORB_RESPONDING: return 0x2FD6A0;  // green
             case ORB_ERROR:      return 0xFF4D4D;  // red
         }
