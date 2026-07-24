@@ -93,3 +93,4 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # A custom "Hey Hermes" WakeNet (Espressif / third-party training) can replace this later.
 CONFIG_USE_AFE_WAKE_WORD=y
 
+CONFIG_LANGUAGE_PT_PT=y
