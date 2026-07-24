@@ -225,14 +225,20 @@ public:
         ForceBlackBackground();
     }
 
-    // Orb reacts to emotion (`llm` message). While speaking -> tint the green;
-    // otherwise this is the "processing" cue (no native device state for it).
+    // Orb reacts to emotion (`llm` message). While speaking -> tint the green.
+    // Otherwise only the "thinking" cue means processing (blue): it's the sole
+    // not-speaking emotion that signals a turn is in flight (sent at end-of-listen,
+    // application.cc:318, and by the adapter). Other not-speaking emotions are idle
+    // FACE cues meant for the (hidden) avatar — the turn-end "neutral" and the 5s
+    // idle "blink" — and must NOT move the orb, else they flash it blue between
+    // turns until the next 1Hz SyncOrbToDeviceState repaints idle-purple. Leave
+    // those to device-state sync.
     virtual void SetEmotion(const char* emotion) override {
         DisplayLockGuard lock(this);
         last_emotion_ = emotion ? emotion : "neutral";
         if (Application::GetInstance().GetDeviceState() == kDeviceStateSpeaking) {
             ApplyResponseTint();
-        } else {
+        } else if (last_emotion_ == "thinking") {
             SetOrbState(ORB_PROCESSING);
         }
     }
