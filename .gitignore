@@ -1,5 +1,8 @@
 tmp/
-components/
+components/*
+# Fork: vendor our overridden esp-wifi-connect (setup portal + rebrand) so the
+# turnkey build ships it; other local components stay ignored.
+!components/esp-wifi-connect/
 managed_components/
 build/
 dist/
@@ -7,7 +10,8 @@ dist/
 .devcontainer/
 sdkconfig.old
 sdkconfig
-dependencies.lock
+# Fork: track the lock for reproducible turnkey builds (esp-wifi-connect resolves
+# to the local override; the rest pin to registry hashes).
 .env
 releases/
 main/assets/lang_config.h
