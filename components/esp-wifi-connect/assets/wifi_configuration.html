@@ -559,6 +559,23 @@
                     </p>
                 </div>
                 <p>
+                    <label for="device_tz">Fuso horário / Timezone:</label>
+                    <select id="device_tz" name="tz">
+                        <option value="&lt;-03&gt;3" selected>Brasília / São Paulo (UTC−3)</option>
+                        <option value="&lt;-04&gt;4">Manaus / Cuiabá (UTC−4)</option>
+                        <option value="&lt;-05&gt;5">Rio Branco / Acre (UTC−5)</option>
+                        <option value="&lt;-02&gt;2">Fernando de Noronha (UTC−2)</option>
+                        <option value="UTC0">UTC</option>
+                        <option value="WET0WEST,M3.5.0/1,M10.5.0">Lisboa (UTC±0, DST)</option>
+                        <option value="GMT0BST,M3.5.0/1,M10.5.0">Londres (UTC±0, DST)</option>
+                        <option value="CET-1CEST,M3.5.0,M10.5.0/3">Europa Central — Berlim/Paris/Madri (UTC+1, DST)</option>
+                        <option value="EST5EDT,M3.2.0,M11.1.0">Nova York (US Eastern, DST)</option>
+                        <option value="CST6CDT,M3.2.0,M11.1.0">Chicago (US Central, DST)</option>
+                        <option value="PST8PDT,M3.2.0,M11.1.0">Los Angeles (US Pacific, DST)</option>
+                        <option value="JST-9">Tóquio (UTC+9)</option>
+                    </select>
+                </p>
+                <p>
                     <input type="submit" value="Connect" id="button" data-lang-value="connect">
                 </p>
             </form>
@@ -1643,7 +1660,8 @@
                 ssid: ssid.value,
                 password: document.getElementById('password').value,
                 ws_url: document.getElementById('ws_url').value.trim(),
-                token: document.getElementById('token').value
+                token: document.getElementById('token').value,
+                tz: document.getElementById('device_tz').value
             };
 
             try {

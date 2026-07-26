@@ -443,6 +443,23 @@ void WifiConfigurationAp::StartWebServer()
                 }
             }
 
+            // 可选：保存时区到 "weather" 命名空间 key "tz"（POSIX TZ string）。
+            // 与 main/boards/.../sp-esp32-s3-1.28-box.cc 的
+            // Settings("weather").GetString("tz") 读取一致，驱动 SNTP 时钟。
+            cJSON *tz_item = cJSON_GetObjectItemCaseSensitive(json, "tz");
+            if (cJSON_IsString(tz_item) && tz_item->valuestring && strlen(tz_item->valuestring) > 0) {
+                nvs_handle_t tz_nvs;
+                esp_err_t tz_err = nvs_open("weather", NVS_READWRITE, &tz_nvs);
+                if (tz_err == ESP_OK) {
+                    nvs_set_str(tz_nvs, "tz", tz_item->valuestring);
+                    nvs_commit(tz_nvs);
+                    nvs_close(tz_nvs);
+                    ESP_LOGI(TAG, "Saved timezone (tz=%s)", tz_item->valuestring);
+                } else {
+                    ESP_LOGE(TAG, "Failed to open weather NVS: %d", tz_err);
+                }
+            }
+
             cJSON_Delete(json);
             // 设置成功响应
             httpd_resp_set_type(req, "application/json");
