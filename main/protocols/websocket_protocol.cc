@@ -5,7 +5,10 @@
 #include "settings.h"
 
 #include <cstring>
+#include <ctime>
 #include <cJSON.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
@@ -171,6 +174,21 @@ bool WebsocketProtocol::OpenAudioChannel() {
             on_audio_channel_closed_();
         }
     });
+
+    // Fork: wss:// needs a sane clock. mbedTLS checks the certificate validity
+    // window, and a board that just booted sits at 1970 until SNTP lands (the
+    // board starts SNTP asynchronously, on the wifi-gated weather task) — so
+    // this is a race, not a missing feature. Wait it out instead of failing the
+    // first turn after every power-cycle. Plain ws:// never waits.
+    if (url.rfind("wss", 0) == 0) {
+        const time_t kSaneEpoch = 1735689600;  // 2025-01-01, i.e. "SNTP replied"
+        for (int i = 0; i < 100 && time(nullptr) < kSaneEpoch; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (time(nullptr) < kSaneEpoch) {
+            ESP_LOGW(TAG, "Clock still unset after 10s — TLS handshake may fail");
+        }
+    }
 
     ESP_LOGI(TAG, "Connecting to websocket server: %s with version: %d", url.c_str(), version_);
     if (!websocket_->Connect(url.c_str())) {
